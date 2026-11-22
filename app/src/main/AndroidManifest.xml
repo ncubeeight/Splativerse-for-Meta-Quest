@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:metavr="http://schemas.meta.com/metavr-sdk" package="com.splativerse.quest" android:versionCode="15" android:versionName="0.1.14-immersive-views" android:installLocation="auto">
+    <metavr:uses-metavr-sdk metavr:minSdkVersion="69" metavr:targetSdkVersion="69" />
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.level" android:version="1" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent><action android:name="org.khronos.openxr.OpenXRRuntimeService" /></intent>
+    </queries>
+    <application android:label="Splativerse" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:debuggable="false" android:hasCode="true" android:extractNativeLibs="true">
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
+        <activity android:name=".LibraryActivity" android:exported="true" android:resizeableActivity="true" android:launchMode="singleTask" android:screenOrientation="landscape" android:excludeFromRecents="true">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /><category android:name="android.intent.category.DEFAULT" /><category android:name="com.oculus.intent.category.2D" /></intent-filter>
+        </activity>
+        <activity android:name=".ViewerActivity" android:exported="false" android:taskAffinity="com.splativerse.quest.viewer" android:resizeableActivity="false" android:screenOrientation="landscape" android:launchMode="singleTask" android:excludeFromRecents="true" android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode" android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+            <meta-data android:name="android.app.lib_name" android:value="splativerse" />
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="com.oculus.intent.category.VR" /><category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" /></intent-filter>
+        </activity>
+    </application>
+</manifest>

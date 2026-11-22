@@ -1,0 +1,14 @@
+title: Splativerse
+description: Explore your Gaussian Splat captures in an immersive space on Meta Quest.
+url: https://ncubeeight.github.io
+baseurl: /Splativerse-for-Meta-Quest
+repository: ncubeeight/Splativerse-for-Meta-Quest
+lang: en
+markdown: kramdown
+kramdown:
+  input: GFM
+permalink: pretty
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock

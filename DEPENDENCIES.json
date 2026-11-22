@@ -1,0 +1,9 @@
+{
+  "openxr_loader_version": "1.1.49",
+  "openxr_aar_sha256": "9a731db8a21bfc5c4be47c8862a508a2e4db3d7167062dc65683cedf7563f0cd",
+  "spz_tag": "v2.0.0",
+  "spz_commit": "cc5671d716740e02d57816d4a4a38d164926e695",
+  "ndk_version": "r27d / 27.3.13750724",
+  "source_basis": "Splativerse source archive 2026-11-15",
+  "build_target": "Android arm64-v8a; min API 29; target API 34"
+}

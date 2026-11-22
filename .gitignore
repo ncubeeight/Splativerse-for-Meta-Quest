@@ -1,0 +1,13 @@
+.build/
+_site/
+.sass-cache/
+.jekyll-cache/
+.bundle/
+.DS_Store
+__pycache__/
+*.apk
+*.apk.sha256
+*.idsig
+*.keystore
+*.jks
+app/src/main/assets/*.spv
