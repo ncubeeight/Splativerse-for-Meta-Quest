@@ -1,0 +1,603 @@
+diff --git a/README.md b/README.md
+index d373c05..bd265ca 100644
+--- a/README.md
++++ b/README.md
+@@ -7,14 +7,14 @@ A native Gaussian splat viewer for Meta Quest, built with C++, Vulkan, OpenXR an
+ ## Features
+ 
+ - Browse free scans on [Splativerse.app](https://splativerse.app/) from the scan library.
+-- Import SPZ, PLY and SPLAT scans from the Android file picker.
++- Import .splativerse packages and SPZ, PLY and SPLAT scans from the Android file picker.
+ - Explore scenes with tracked headset movement and Touch controller navigation.
+ - Search, sort, and hide or restore library entries without deleting scan files.
+ - Save named Views, choose a starting View, and jump between saved Views inside a scene.
+ - Adjust rendering radius and filtering, and reposition or hide the controls panel.
+ - A small synthetic demonstration scene is included.
+ 
+-This is the Quest counterpart to [Splativerse for visionOS](https://github.com/ncubeeight/Splativerse-for-visionOS). Saved View coordinates and scan fingerprints use compatible models; cross-device package sharing is not implemented in this Quest version. See [VIEW_COMPATIBILITY.md](VIEW_COMPATIBILITY.md).
++This is the Quest counterpart to [Splativerse for visionOS](https://github.com/ncubeeight/Splativerse-for-visionOS). Quest can import compatible visionOS .splativerse packages, including their saved Views and Launch Point. See [VIEW_COMPATIBILITY.md](VIEW_COMPATIBILITY.md).
+ 
+ ## Status
+ 
+@@ -25,7 +25,7 @@ Scans up to 1 million splats / 128 MiB are accepted, but file acceptance is not
+ ## Download free scans on Quest
+ 
+ 1. In the app’s scan library, choose **Browse free scans**.
+-2. Download an **SPZ** scan in Quest Browser.
++2. Download a **.splativerse** package or a standalone scan in Quest Browser.
+ 3. Return to Splativerse and choose **Import scans → Downloads**, then select the file.
+ 
+ ## Controls
+diff --git a/VIEW_COMPATIBILITY.md b/VIEW_COMPATIBILITY.md
+index 5a39f04..64e30bb 100644
+--- a/VIEW_COMPATIBILITY.md
++++ b/VIEW_COMPATIBILITY.md
+@@ -32,16 +32,21 @@ Position/forward are in decoded source coordinates **before** units and up-axis
+ | yDown | (x, -y, -z) |
+ | yUp | (x, y, z) |
+ | zUp | (x, z, -y) |
++| xDown | (y, -x, z) |
++| xUp | (-y, x, z) |
++| zDown | (x, -z, y) |
++
++Quest stores all six orientations. The documented shared settings values with visionOS are `yDown`, `yUp`, and `zUp`.
+ 
+ Quest geometry uses orientation × metresPerUnit. Saving inverts that transform. Heading uses horizontal world facing, with projected head-right fallback near vertical gaze; pitch/roll are not saved. Restoring maps the current tracked eye to the saved source position and applies only yaw. Vision also inverts/applies its source-alignment translation, so a different spawn or floor alignment does not change the meaning of the stored source position.
+ 
+-## Settings and future sharing
++## Settings and package import
+ 
+-Quest metadata keeps the portable settings fields: `metresPerUnit`, `upAxis`, `floorOffset`, `bubbleRadius`, `spawnMode`, `splatFilter`. Current library UI supports units/up axis/filter/radius; floorOffset=0 and spawnMode=denseRegion are the defaults. Non-default floor/spawn settings from external packages are not imported or applied in this release.
++Quest metadata keeps the portable settings fields: `metresPerUnit`, `upAxis`, `floorOffset`, `bubbleRadius`, `spawnMode`, `splatFilter`. Current library UI supports units/up axis/filter/radius; floorOffset=0 and spawnMode=denseRegion are the defaults. Packages with a nonzero floor offset or a spawn mode other than denseRegion are rejected.
+ 
+-Portable bubbleRadius stays in Vision's current 60–360 m range. Quest's 30 m and Full scan (0) choices are separate local `liveRadius` values; they retain the last portable radius, initially 60 m. Future sharing must make this distinction visible instead of promising identical radius behavior. The Quest `library.json` index, display titles, paths and timestamps are platform-specific.
++Portable bubbleRadius stays in Vision's current 60–360 m range. Quest's 30 m and Full scan (0) choices are separate local `liveRadius` values; they retain the last portable radius, initially 60 m. The Quest `library.json` index, display titles, paths and timestamps are platform-specific.
+ 
+-Future `.splativerse` export should carry the unchanged scan bytes, digest, compatible settings and this `ScanViewpoints` object. Implement package validation, transactional import, and duplicate-View merge before exposing sharing. Do not copy either platform's entire library index into the other. No network service or package exchange is part of 0.1.5.
++The Quest importer verifies the embedded scan bytes against the package digest and imports its compatible settings and saved Views. A fresh import uses the package’s Launch Point. Reimport adds previously unseen Views and preserves local edits and any existing starting View.
+ 
+ ## Regression checks
+ 
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 0b57889..a764a78 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:metavr="http://schemas.meta.com/metavr-sdk" package="com.splativerse.quest" android:versionCode="15" android:versionName="0.1.14-immersive-views" android:installLocation="auto">
++<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:metavr="http://schemas.meta.com/metavr-sdk" package="com.splativerse.quest" android:versionCode="16" android:versionName="0.1.15" android:installLocation="auto">
+     <metavr:uses-metavr-sdk metavr:minSdkVersion="69" metavr:targetSdkVersion="69" />
+     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
+     <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+diff --git a/app/src/main/java/com/splativerse/quest/LibraryActivity.java b/app/src/main/java/com/splativerse/quest/LibraryActivity.java
+index 549c843..1e3e7e9 100644
+--- a/app/src/main/java/com/splativerse/quest/LibraryActivity.java
++++ b/app/src/main/java/com/splativerse/quest/LibraryActivity.java
+@@ -77,7 +77,7 @@ public final class LibraryActivity extends Activity {
+                 int n=++read;ui(()->message("Reading scan "+n+" of "+files.length+"…",false));LibraryStore.Item item=LibraryStore.inspect(f);
+                 JSONObject settings=LibraryStore.defaultSettings();int unit=preferences.getInt("units:"+f.getName(),0),axis=preferences.getInt("axis:"+f.getName(),0),radius=preferences.getInt("radius:"+f.getName(),60);
+                 if(unit<0||unit>2)unit=0;if(axis<0||axis>2)axis=0;try{LibraryStore.checkedRadius(radius);}catch(Exception e){radius=60;}
+-                settings.put("metresPerUnit",new double[]{1,.01,.001}[unit]).put("upAxis",new String[]{"yDown","yUp","zUp"}[axis]).put("bubbleRadius",Math.max(60,radius));
++                settings.put("metresPerUnit",new double[]{1,.01,.001}[unit]).put("upAxis",LibraryStore.DownDirection.values()[axis].key).put("bubbleRadius",Math.max(60,radius));
+                 String oldTitle=preferences.getString("name:"+f.getName(),null);store.decorate(item,settings,radius,oldTitle!=null&&oldTitle.codePointCount(0,oldTitle.length())<=80?oldTitle:null);
+                 unique.put(item.digest,unique.containsKey(item.digest)?LibraryStore.mergeCopies(unique.get(item.digest),item):item);
+             }
+@@ -116,7 +116,7 @@ public final class LibraryActivity extends Activity {
+         if(detail==null)return;detail.removeAllViews();sidebar.setVisibility(!wide&&detailVisible?View.GONE:View.VISIBLE);detail.setVisibility(wide||detailVisible?View.VISIBLE:View.GONE);
+         if(!wide){Button back=button("‹  Back to library",false,()->{detailVisible=false;renderDetail();});detail.addView(back);}
+         ScrollView scroll=new ScrollView(this);LinearLayout content=column();content.setPadding(dp(8),0,dp(8),dp(16));scroll.addView(content);detail.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));LibraryStore.Item i=find(selected);
+-        if(i==null){content.addView(heading("Your next space",26));content.addView(text("Import a PLY, SPZ or SPLAT scan, then save the places you want to return to.",17,muted));return;}
++        if(i==null){content.addView(heading("Your next space",26));content.addView(text("Browse free scans, or import a .splativerse package or PLY, SPZ or SPLAT scan from Downloads.",17,muted));return;}
+         content.addView(heading(i.title,26));content.addView(text(i.format+"   ·   "+size(i.bytes)+"   ·   "+(i.count>0?String.format(Locale.US,"%,d splats",i.count):"Count unavailable"),15,green));
+         content.addView(text("File: "+i.file.getName()+(i.copies>1?" · "+i.copies+" identical copies":"")+"\nModified "+DateFormat.getDateTimeInstance(DateFormat.MEDIUM,DateFormat.SHORT).format(new Date(i.modified)),12,muted));
+         if(!i.issue.isEmpty())content.addView(text(i.issue,15,Color.rgb(255,187,157)));
+@@ -148,12 +148,21 @@ public final class LibraryActivity extends Activity {
+         LinearLayout panel=column();panel.setPadding(dp(22),dp(8),dp(22),dp(8));panel.addView(text("Live radius",14,ink));int[] radii={30,60,120,180,240,300,360,0};Spinner radius=spinner(new String[]{"30 m","60 m","120 m","180 m","240 m","300 m","360 m","Full scan"});for(int n=0;n<radii.length;n++)if(i.radius==radii[n])radius.setSelection(n);panel.addView(radius);panel.addView(text("Smaller radii show less distant scenery. The outer 5 m fades into grey.",12,muted));
+         panel.addView(text("Live filter",14,ink));Spinner filter=spinner(new String[]{"Original scan appearance","Sharper detail (experimental)"});filter.setSelection(i.settings.getString("splatFilter").equals("pixel")?1:0);panel.addView(filter);
+         panel.addView(text("Source units",14,ink));double currentUnits=i.settings.getDouble("metresPerUnit");Spinner units=spinner(new String[]{"Metres","Centimetres","Millimetres","Keep current scale ("+currentUnits+")"});units.setSelection(currentUnits==1?0:currentUnits==.01?1:currentUnits==.001?2:3);panel.addView(units);
+-        panel.addView(text("Up direction",14,ink));Spinner axis=spinner(new String[]{"Y down (3DGS / SPZ)","Y up","Z up"});axis.setSelection(Arrays.asList("yDown","yUp","zUp").indexOf(i.settings.getString("upAxis")));panel.addView(axis);
+-        ScrollView scroll=new ScrollView(this);scroll.addView(panel);new AlertDialog.Builder(this).setTitle("Scan settings").setView(scroll).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{try{JSONObject s=new JSONObject(i.settings.toString());int r=radii[radius.getSelectedItemPosition()];if(r>=60)s.put("bubbleRadius",r);s.put("splatFilter",filter.getSelectedItemPosition()==1?"pixel":"source");s.put("metresPerUnit",units.getSelectedItemPosition()<3?new double[]{1,.01,.001}[units.getSelectedItemPosition()]:currentUnits);s.put("upAxis",new String[]{"yDown","yUp","zUp"}[axis.getSelectedItemPosition()]);mutate(()->store.configure(i.digest,s,r,null,false));}catch(Exception e){failure(e);}}).show();
++        panel.addView(text("Down direction",14,ink));
++        LibraryStore.DownDirection[] directions = LibraryStore.DownDirection.values();
++        String[] labels = new String[directions.length];
++        for (LibraryStore.DownDirection direction : directions) {
++            labels[direction.ordinal()] = direction.label;
++        }
++        Spinner axis = spinner(labels);
++        axis.setSelection(LibraryStore.DownDirection.fromKey(i.settings.getString("upAxis")).ordinal());
++        panel.addView(axis);
++        panel.addView(text("Choose the scan axis that points toward the floor. For an upside-down scan, switch to the opposite sign. Save and reopen the scan to see the change.",12,muted));
++        ScrollView scroll=new ScrollView(this);scroll.addView(panel);new AlertDialog.Builder(this).setTitle("Scan settings").setView(scroll).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{try{JSONObject s=new JSONObject(i.settings.toString());int r=radii[radius.getSelectedItemPosition()];if(r>=60)s.put("bubbleRadius",r);s.put("splatFilter",filter.getSelectedItemPosition()==1?"pixel":"source");s.put("metresPerUnit",units.getSelectedItemPosition()<3?new double[]{1,.01,.001}[units.getSelectedItemPosition()]:currentUnits);s.put("upAxis",directions[axis.getSelectedItemPosition()].key);mutate(()->store.configure(i.digest,s,r,null,false));}catch(Exception e){failure(e);}}).show();
+     }catch(Exception e){failure(e);}}
+     private void launch(LibraryStore.Item item,JSONObject pose,String updateID,LibraryStore.Item comparison){
+         if(busy||!item.canOpen())return;busy(true,"Verifying scan and preparing your View…");worker.execute(()->{try{LibraryStore.verify(item.file,item.digest);if(comparison!=null)LibraryStore.verify(comparison.file,comparison.digest);JSONObject views=store.views(item.digest),start=LibraryStore.startingPose(views);JSONObject entry=pose==null?start:pose;if(entry!=null)LibraryStore.validatePose(entry);
+-            store.configure(item.digest,item.settings,item.radius,null,true);Intent intent=new Intent(this,ViewerActivity.class).setAction(Intent.ACTION_MAIN).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);intent.putExtra("scan",item.file.getAbsolutePath());intent.putExtra("digest",item.digest);intent.putExtra("units",(float)item.settings.getDouble("metresPerUnit"));intent.putExtra("axis",Arrays.asList("yDown","yUp","zUp").indexOf(item.settings.getString("upAxis")));intent.putExtra("radius",item.radius);intent.putExtra("pixelFilter",item.settings.getString("splatFilter").equals("pixel"));
++            store.configure(item.digest,item.settings,item.radius,null,true);Intent intent=new Intent(this,ViewerActivity.class).setAction(Intent.ACTION_MAIN).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);intent.putExtra("scan",item.file.getAbsolutePath());intent.putExtra("digest",item.digest);intent.putExtra("units",(float)item.settings.getDouble("metresPerUnit"));intent.putExtra("axis",LibraryStore.DownDirection.fromKey(item.settings.getString("upAxis")).ordinal());intent.putExtra("radius",item.radius);intent.putExtra("pixelFilter",item.settings.getString("splatFilter").equals("pixel"));
+             if(entry!=null)intent.putExtra("entryPose",entry.toString());if(start!=null)intent.putExtra("defaultPose",start.toString());if(updateID!=null)intent.putExtra("updateViewID",updateID);if(comparison!=null)intent.putExtra("compareScan",comparison.file.getAbsolutePath());
+             preferences.edit().putString("selectedDigest",item.digest).remove("lastError").apply();ui(()->{busy(false,null);detailVisible=true;startActivity(intent);android.util.Log.i("Splativerse","Panel task "+getTaskId()+": removing after immersive launch");finishAndRemoveTask();});
+         }catch(Exception e){failure(e);}});
+@@ -173,7 +182,7 @@ public final class LibraryActivity extends Activity {
+         } catch (ActivityNotFoundException e) {
+             new AlertDialog.Builder(this)
+                 .setTitle("Browse free scans")
+-                .setMessage("Open " + FREE_SCANS_URL + " in Quest Browser. After downloading an SPZ scan, return here and choose Import scans → Downloads.")
++                .setMessage("Open " + FREE_SCANS_URL + " in Quest Browser. After downloading a .splativerse package or scan, return here and choose Import scans → Downloads.")
+                 .setPositiveButton("Done", null)
+                 .show();
+         }
+@@ -182,13 +191,20 @@ public final class LibraryActivity extends Activity {
+     private void pick(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);try{startActivityForResult(i,42);}catch(Exception e){message("No file picker is installed. Scans can also be copied to the app’s Scans folder over USB.",true);}}
+     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request!=42||result!=RESULT_OK||data==null)return;List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null)for(int i=0;i<data.getClipData().getItemCount();i++)uris.add(data.getClipData().getItemAt(i).getUri());else if(data.getData()!=null)uris.add(data.getData());if(uris.isEmpty())return;
+         busy(true,"Importing scans…");Set<String> known=new HashSet<>();for(LibraryStore.Item item:items)known.add(item.digest);worker.execute(()->{List<String> errors=new ArrayList<>();int imported=0,duplicates=0;
+-            for(Uri uri:uris){File tmp=null;try{String name="scan";try(Cursor c=getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}if(name==null||!LibraryStore.supported(name))throw new IOException("Choose PLY, SPZ or SPLAT scans. Package sharing will be added separately.");tmp=File.createTempFile("import-",".partial",directory);MessageDigest hash=MessageDigest.getInstance("SHA-256");long bytes=0;try(InputStream in=getContentResolver().openInputStream(uri);FileOutputStream out=new FileOutputStream(tmp)){if(in==null)throw new IOException("Could not open "+name);byte[] block=new byte[1024*1024];int n;while((n=in.read(block))!=-1){bytes+=n;if(bytes>LibraryStore.MAX_FILE)throw new IOException(name+" exceeds 128 MiB.");hash.update(block,0,n);out.write(block,0,n);}out.getFD().sync();}if(bytes==0)throw new IOException(name+" is empty.");StringBuilder digest=new StringBuilder();for(byte b:hash.digest())digest.append(String.format(Locale.ROOT,"%02x",b&255));String sha=digest.toString();if(known.contains(sha)){duplicates++;tmp.delete();continue;}
++            for(Uri uri:uris){File tmp=null;try{String name="scan";try(Cursor c=getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}if(ScanPackage.supported(name)){
++                    try(InputStream in=getContentResolver().openInputStream(uri);ScanPackage pkg=ScanPackage.read(in,directory)){
++                        if(store.importPackage(pkg,directory,known.contains(pkg.digest)))imported++;else duplicates++;
++                        known.add(pkg.digest);selected=pkg.digest;
++                    }
++                    continue;
++                }
++                if(name==null||!LibraryStore.supported(name))throw new IOException("Choose a .splativerse package or a PLY, SPZ or SPLAT scan.");tmp=File.createTempFile("import-",".partial",directory);MessageDigest hash=MessageDigest.getInstance("SHA-256");long bytes=0;try(InputStream in=getContentResolver().openInputStream(uri);FileOutputStream out=new FileOutputStream(tmp)){if(in==null)throw new IOException("Could not open "+name);byte[] block=new byte[1024*1024];int n;while((n=in.read(block))!=-1){bytes+=n;if(bytes>LibraryStore.MAX_FILE)throw new IOException(name+" exceeds 128 MiB.");hash.update(block,0,n);out.write(block,0,n);}out.getFD().sync();}if(bytes==0)throw new IOException(name+" is empty.");StringBuilder digest=new StringBuilder();for(byte b:hash.digest())digest.append(String.format(Locale.ROOT,"%02x",b&255));String sha=digest.toString();if(known.contains(sha)){duplicates++;tmp.delete();continue;}
+                 String ext=name.substring(name.lastIndexOf('.')).toLowerCase(Locale.ROOT);File destination=new File(directory,sha+ext);if(destination.exists()){if(!LibraryStore.fingerprint(destination).equals(sha))throw new IOException("A conflicting file is already present. Refresh the library.");duplicates++;}else{Files.move(tmp.toPath(),destination.toPath());imported++;}known.add(sha);String title=name.codePointCount(0,name.length())<=80?name:null;if(store.metadata(sha)==null)store.configure(sha,LibraryStore.defaultSettings(),60,title,false);selected=sha;
+             }catch(Exception e){errors.add(e.getMessage()==null?"Import failed.":e.getMessage());}finally{if(tmp!=null)tmp.delete();}}
+             final int added=imported,existing=duplicates;ui(()->{busy(false,null);loadLibrary();Toast.makeText(this,added+" imported · "+existing+" already in library",Toast.LENGTH_LONG).show();if(!errors.isEmpty())new AlertDialog.Builder(this).setTitle("Some files could not be imported").setMessage(android.text.TextUtils.join("\n\n",errors)).setPositiveButton("OK",null).show();});
+         });
+     }
+-    private void help(){new AlertDialog.Builder(this).setTitle("Exploring and saving Views").setMessage("Choose Browse free scans to open Splativerse.app in your browser. After downloading an SPZ scan, return here and choose Import scans → Downloads.\n\nLeft stick: move / strafe\nRight stick: snap turn / move up and down\nLeft-stick click: save a View\nRight-stick click: change radius\nX: open or close this scan’s saved Views\nY: switch between original scan appearance and sharper detail\nA: return to your starting View\nB: return to this library\nRight trigger: select menu arrows or X\nLeft trigger: show the hidden controls menu\n\nUse × beside a library scan to hide it without deleting its file or saved Views. Turn on Show hidden scans and choose ↶ to restore it.\n\n“Smooth edges” means the scan’s built-in smoothing is active. “Original look” preserves a scan without that smoothing. “Sharper detail” uses an alternative sharpening filter.\n\nIn a detail comparison, X switches detail and left-stick click saves comparison images.\n\nViews are named automatically. Rename, update, delete or choose a starting View in the library.\n\nQuest preview 0.1.14 · Up to 1,000,000 splats / 128 MiB. Movement has no collision detection.").setNegativeButton("Licenses",(d,w)->licenses()).setPositiveButton("Done",null).show();}
++    private void help(){new AlertDialog.Builder(this).setTitle("Exploring and saving Views").setMessage("Choose Browse free scans to open Splativerse.app in your browser. After downloading a .splativerse package or scan, return here and choose Import scans → Downloads.\n\nLeft stick: move / strafe\nRight stick: snap turn / move up and down\nLeft-stick click: save a View\nRight-stick click: change radius\nX: open or close this scan’s saved Views\nY: switch between original scan appearance and sharper detail\nA: return to your starting View\nB: return to this library\nRight trigger: select menu arrows or X\nLeft trigger: show the hidden controls menu\n\nUse × beside a library scan to hide it without deleting its file or saved Views. Turn on Show hidden scans and choose ↶ to restore it.\n\n“Smooth edges” means the scan’s built-in smoothing is active. “Original look” preserves a scan without that smoothing. “Sharper detail” uses an alternative sharpening filter.\n\nIn a detail comparison, X switches detail and left-stick click saves comparison images.\n\nViews are named automatically. Rename, update, delete or choose a starting View in the library.\n\nUp to 1,000,000 splats / 128 MiB. Movement has no collision detection.").setNegativeButton("Licenses",(d,w)->licenses()).setPositiveButton("Done",null).show();}
+     private void licenses(){try(InputStream in=getAssets().open("THIRD_PARTY_LICENSES.txt")){ByteArrayOutputStream out=new ByteArrayOutputStream();copy(in,out);ScrollView scroll=new ScrollView(this);TextView t=text(out.toString("UTF-8"),13,ink);t.setPadding(dp(20),dp(12),dp(20),dp(12));scroll.addView(t);new AlertDialog.Builder(this).setTitle("Open-source licenses").setView(scroll).setPositiveButton("Close",null).show();}catch(Exception e){failure(e);}}
+     private void failure(Exception e){ui(()->{busy(false,null);message(e.getMessage()==null?"Something went wrong. Your scan files were kept.":e.getMessage(),true);});}
+     private void copy(InputStream in,OutputStream out)throws IOException{byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}
+diff --git a/app/src/main/java/com/splativerse/quest/LibraryStore.java b/app/src/main/java/com/splativerse/quest/LibraryStore.java
+index 60ff233..935d746 100644
+--- a/app/src/main/java/com/splativerse/quest/LibraryStore.java
++++ b/app/src/main/java/com/splativerse/quest/LibraryStore.java
+@@ -46,7 +46,10 @@ public final class LibraryStore {
+         if(b==-1&&out.size()==0)throw new EOFException("Incomplete PLY header.");return new String(out.toByteArray(),StandardCharsets.US_ASCII);
+     }
+     public static Item inspect(File file)throws Exception{
+-        String hash=fingerprint(file),format=file.getName().substring(file.getName().lastIndexOf('.')+1).toUpperCase(Locale.ROOT),issue="";long count=-1;
++        return inspect(file,file.getName().substring(file.getName().lastIndexOf('.')+1).toUpperCase(Locale.ROOT),fingerprint(file));
++    }
++    static Item inspect(File file,String format,String hash){
++        String issue="";long count=-1;
+         try{
+             if(file.length()==0)throw new IOException("This scan is empty.");
+             if(format.equals("SPZ")){
+@@ -69,6 +72,31 @@ public final class LibraryStore {
+         }catch(Exception e){issue=e.getMessage()==null?"Could not read the scan header.":e.getMessage();}
+         return new Item(file,hash,format,count,issue);
+     }
++    // Preserve this order for legacy preferences and the native UpAxis enum.
++    enum DownDirection {
++        POS_Y("yDown", "+Y (default for SPZ)"),
++        NEG_Y("yUp", "−Y"),
++        NEG_Z("zUp", "−Z"),
++        POS_X("xDown", "+X"),
++        NEG_X("xUp", "−X"),
++        POS_Z("zDown", "+Z");
++
++        final String key;
++        final String label;
++
++        DownDirection(String key, String label) {
++            this.key = key;
++            this.label = label;
++        }
++
++        static DownDirection fromKey(String key) throws IOException {
++            for (DownDirection direction : values()) {
++                if (direction.key.equals(key)) return direction;
++            }
++            throw new IOException("Unsupported scan down direction.");
++        }
++    }
++
+     public static JSONObject defaultSettings()throws JSONException{return new JSONObject().put("metresPerUnit",1).put("upAxis","yDown").put("floorOffset",0).put("bubbleRadius",60).put("spawnMode","denseRegion").put("splatFilter","source");}
+     public static JSONObject emptyViews()throws JSONException{return new JSONObject().put("views",new JSONArray());}
+     private static JSONObject cloneObject(JSONObject value)throws JSONException{return new JSONObject(value.toString());}
+@@ -92,7 +120,8 @@ public final class LibraryStore {
+         for(String key:new String[]{"metresPerUnit","floorOffset","bubbleRadius"})if(!(s.get(key) instanceof Number))throw new IOException("Invalid portable scan settings.");
+         double units=s.getDouble("metresPerUnit"),floor=s.getDouble("floorOffset"),radius=s.getDouble("bubbleRadius");
+         if(!Float.isFinite((float)units)||(float)units<=0||!Float.isFinite((float)floor)||!Double.isFinite(radius)||radius<60||radius>360)throw new IOException("Invalid portable scan settings.");
+-        if(!Arrays.asList("yDown","yUp","zUp").contains(s.getString("upAxis"))||!Arrays.asList("denseRegion","scanCenter").contains(s.getString("spawnMode"))||!Arrays.asList("source","pixel").contains(s.getString("splatFilter")))throw new IOException("Unsupported scan settings.");
++        DownDirection.fromKey(s.getString("upAxis"));
++        if(!Arrays.asList("denseRegion","scanCenter").contains(s.getString("spawnMode"))||!Arrays.asList("source","pixel").contains(s.getString("splatFilter")))throw new IOException("Unsupported scan settings.");
+     }
+     public static int checkedRadius(int radius)throws IOException{for(int r:new int[]{0,30,60,120,180,240,300,360})if(radius==r)return r;throw new IOException("Unsupported live radius.");}
+     private JSONObject read(String filename)throws Exception{
+@@ -112,6 +141,49 @@ public final class LibraryStore {
+         digestValid(digest);validateSettings(settings);checkedRadius(radius);JSONObject c=catalog(),assets=c.getJSONObject("assets"),a=assets.optJSONObject(digest);if(a==null)a=new JSONObject();
+         a.put("settings",cloneObject(settings)).put("liveRadius",radius);if(title!=null)a.put("title",name(title));if(opened)a.put("lastOpened",System.currentTimeMillis());assets.put(digest,a);write("library.json",c);
+     }}
++    /** Keep local edits on reimport; attach only previously unseen package Views. */
++    boolean importPackage(ScanPackage pkg,File directory,boolean existingScan)throws Exception{synchronized(LOCK){
++        File target=new File(directory,pkg.digest+pkg.extension);
++        if(target.exists()){verify(target,pkg.digest);existingScan=true;}
++        JSONObject c=catalog(),assets=c.getJSONObject("assets"),all=viewsCatalog();
++        JSONObject oldAsset=assets.optJSONObject(pkg.digest),oldViews=all.optJSONObject(pkg.digest);
++        JSONObject merged=oldViews==null?emptyViews():cloneObject(oldViews);
++        JSONArray local=merged.getJSONArray("views"),incoming=pkg.views.getJSONArray("views");
++        boolean hadLocalViews=local.length()!=0;
++        Set<String> ids=new HashSet<>();
++        for(int n=0;n<local.length();n++)ids.add(uuid(local.getJSONObject(n).getString("id")));
++        for(int n=0;n<incoming.length();n++){
++            JSONObject view=incoming.getJSONObject(n);
++            if(ids.add(uuid(view.getString("id"))))local.put(cloneObject(view));
++        }
++        if(!hadLocalViews&&!pkg.views.isNull("defaultID"))merged.put("defaultID",pkg.views.getString("defaultID"));
++        validateViews(merged);
++        if(existingScan&&oldAsset!=null){
++            if(oldViews==null||!oldViews.toString().equals(merged.toString())){
++                all.put(pkg.digest,merged);write("viewpoints.json",all);
++            }
++            return false;
++        }
++        JSONObject asset=oldAsset==null?new JSONObject():cloneObject(oldAsset);
++        if(oldAsset==null){
++            double portable=pkg.settings.getDouble("bubbleRadius");int live=60;
++            for(int r:new int[]{120,180,240,300,360})if(Math.abs(r-portable)<Math.abs(live-portable))live=r;
++            asset.put("settings",cloneObject(pkg.settings)).put("liveRadius",live);
++            if(pkg.title!=null)asset.put("title",name(pkg.title));
++        }
++        boolean assetWritten=false,viewsWritten=false;
++        try{
++            assets.put(pkg.digest,asset);write("library.json",c);assetWritten=true;
++            all.put(pkg.digest,merged);write("viewpoints.json",all);viewsWritten=true;
++            // Do not publish a visible scan until both metadata files have been saved.
++            if(!existingScan)Files.move(pkg.staged.toPath(),target.toPath(),StandardCopyOption.ATOMIC_MOVE);
++            return !existingScan;
++        }catch(Exception failure){
++            try{if(viewsWritten){if(oldViews==null)all.remove(pkg.digest);else all.put(pkg.digest,oldViews);write("viewpoints.json",all);}}catch(Exception restore){failure.addSuppressed(restore);}
++            try{if(assetWritten){if(oldAsset==null)assets.remove(pkg.digest);else assets.put(pkg.digest,oldAsset);write("library.json",c);}}catch(Exception restore){failure.addSuppressed(restore);}
++            throw failure;
++        }
++    }}
+     public void decorate(Item item,JSONObject migratedSettings,int migratedRadius,String migratedTitle)throws Exception{synchronized(LOCK){
+         JSONObject a=metadata(item.digest);if(a==null){configure(item.digest,migratedSettings,migratedRadius,migratedTitle,false);a=metadata(item.digest);}
+         item.settings=a.getJSONObject("settings");validateSettings(item.settings);item.radius=checkedRadius(a.optInt("liveRadius",60));item.title=a.optString("title",item.file.getName());item.lastOpened=a.optLong("lastOpened",0);item.views=views(item.digest);
+diff --git a/app/src/main/java/com/splativerse/quest/ScanPackage.java b/app/src/main/java/com/splativerse/quest/ScanPackage.java
+new file mode 100644
+index 0000000..3ed1adf
+--- /dev/null
++++ b/app/src/main/java/com/splativerse/quest/ScanPackage.java
+@@ -0,0 +1,89 @@
++package com.splativerse.quest;
++
++import org.json.JSONObject;
++import org.json.JSONTokener;
++import java.io.*;
++import java.nio.ByteBuffer;
++import java.nio.ByteOrder;
++import java.nio.charset.CodingErrorAction;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.security.MessageDigest;
++import java.util.Arrays;
++import java.util.Locale;
++
++/** Reads a SPLATPK1 export without trusting the embedded filename as a path. */
++final class ScanPackage implements AutoCloseable {
++    private static final byte[] MAGIC="SPLATPK1".getBytes(StandardCharsets.US_ASCII);
++    private static final int MAX_JSON=1024*1024;
++    final File staged;
++    final String digest, extension, title;
++    final JSONObject settings, views;
++    private ScanPackage(File staged,String digest,String extension,String title,JSONObject settings,JSONObject views){
++        this.staged=staged;this.digest=digest;this.extension=extension;this.title=title;this.settings=settings;this.views=views;
++    }
++    static boolean supported(String name){return name!=null&&name.toLowerCase(Locale.ROOT).endsWith(".splativerse");}
++    private static JSONObject readObject(DataInputStream in,int size)throws Exception{
++        if(size<2||size>MAX_JSON)throw new IOException("Invalid Splativerse package metadata length.");
++        byte[] bytes=new byte[size];in.readFully(bytes);
++        String string=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
++                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
++        JSONTokener tokenizer=new JSONTokener(string);
++        Object parsed=tokenizer.nextValue();
++        if(!(parsed instanceof JSONObject)||tokenizer.nextClean()!=0||string.indexOf(0)>=0)throw new IOException("Invalid Splativerse package metadata.");
++        return (JSONObject)parsed;
++    }
++    private static long wholeNumber(JSONObject json,String key)throws Exception{
++        Object value=json.get(key);
++        if(!(value instanceof Number))throw new IOException("Invalid package "+key+".");
++        Number n=(Number)value;
++        if(!Double.isFinite(n.doubleValue())||n.doubleValue()!=n.longValue())throw new IOException("Invalid package "+key+".");
++        return n.longValue();
++    }
++    static ScanPackage read(InputStream source,File directory)throws Exception{
++        if(source==null)throw new IOException("Could not open the Splativerse package.");
++        DataInputStream in=new DataInputStream(new BufferedInputStream(source));
++        byte[] header=new byte[16];in.readFully(header);
++        if(!Arrays.equals(MAGIC,Arrays.copyOf(header,8)))throw new IOException("Unknown Splativerse package format.");
++        ByteBuffer sizes=ByteBuffer.wrap(header,8,8).order(ByteOrder.LITTLE_ENDIAN);
++        int manifestSize=sizes.getInt(),viewsSize=sizes.getInt();
++        JSONObject manifest=readObject(in,manifestSize),views=readObject(in,viewsSize);
++        if(wholeNumber(manifest,"version")!=1)throw new IOException("This Splativerse package needs a newer version of the app.");
++        long count=wholeNumber(manifest,"byteCount");
++        if(count<=0||count>LibraryStore.MAX_FILE)throw new IOException("The embedded scan must be between 1 byte and 128 MiB.");
++        String filename=manifest.getString("filename");
++        if(filename.contains("/")||filename.indexOf(92)>=0||!LibraryStore.supported(filename))throw new IOException("The package does not contain a supported PLY, SPZ or SPLAT scan.");
++        for(int i=0;i<filename.length();i++)if(Character.isISOControl(filename.charAt(i)))throw new IOException("Invalid package scan name.");
++        String ext=filename.substring(filename.lastIndexOf('.')).toLowerCase(Locale.ROOT);
++        String digest=manifest.getString("sha256").toLowerCase(Locale.ROOT);
++        if(!digest.matches("[0-9a-f]{64}"))throw new IOException("Invalid package scan fingerprint.");
++        JSONObject settings=manifest.getJSONObject("settings");
++        LibraryStore.validateSettings(settings);LibraryStore.validateViews(views);
++        if(settings.getDouble("floorOffset")!=0||!settings.getString("spawnMode").equals("denseRegion"))
++            throw new IOException("This package uses floor or spawn settings that Quest does not yet support.");
++        File staged=File.createTempFile("package-",".partial",directory);boolean keep=false;
++        try{
++            MessageDigest hash=MessageDigest.getInstance("SHA-256");
++            try(FileOutputStream out=new FileOutputStream(staged)){
++                byte[] block=new byte[256*1024];
++                for(long left=count;left>0;){
++                    if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("Package import cancelled.");
++                    int n=in.read(block,0,(int)Math.min(left,block.length));
++                    if(n<0)throw new EOFException("The package download is incomplete.");
++                    hash.update(block,0,n);out.write(block,0,n);left-=n;
++                }
++                if(in.read()!=-1)throw new IOException("Unexpected data after the embedded scan.");
++                out.getFD().sync();
++            }
++            StringBuilder actual=new StringBuilder();
++            for(byte b:hash.digest())actual.append(String.format(Locale.ROOT,"%02x",b&255));
++            if(!digest.contentEquals(actual))throw new IOException("The embedded scan does not match its fingerprint.");
++            LibraryStore.Item checked=LibraryStore.inspect(staged,ext.substring(1).toUpperCase(Locale.ROOT),digest);
++            if(!checked.canOpen())throw new IOException(checked.issue.isEmpty()?"The embedded scan cannot be opened.":checked.issue);
++            String title=filename.substring(0,filename.lastIndexOf('.')).trim();
++            ScanPackage parsed=new ScanPackage(staged,digest,ext,title.isEmpty()||title.codePointCount(0,title.length())>80?null:title,settings,views);
++            keep=true;return parsed;
++        }finally{if(!keep)Files.deleteIfExists(staged.toPath());}
++    }
++    @Override public void close()throws IOException{Files.deleteIfExists(staged.toPath());}
++}
+diff --git a/native/core.h b/native/core.h
+index e396415..271c5b0 100644
+--- a/native/core.h
++++ b/native/core.h
+@@ -32,18 +32,28 @@ constexpr size_t shFloatsPerHalf=8*3;
+ inline void packHarmonics(const Splat&s,float*low,float*high){
+     for(size_t k=0;k<8;k++)for(size_t c=0;c<3;c++){low[k*3+c]=s.sh[k][c];high[k*3+c]=s.sh[k+8][c];}
+ }
+-enum class UpAxis { YDown=0, YUp=1, ZUp=2 };
++enum class UpAxis { YDown=0, YUp=1, ZUp=2, XDown=3, XUp=4, ZDown=5 };
+ struct Settings { float units=1; UpAxis up=UpAxis::YDown; };
+ inline Vec3 orient(Vec3 p,UpAxis up){
+-    if(up==UpAxis::YDown)return {p.x,-p.y,-p.z};
+-    if(up==UpAxis::ZUp)return {p.x,p.z,-p.y};
+-    return p;
++    switch (up) {
++        case UpAxis::YDown: return {p.x,-p.y,-p.z};
++        case UpAxis::ZUp:   return {p.x,p.z,-p.y};
++        case UpAxis::XDown: return {p.y,-p.x,p.z};
++        case UpAxis::XUp:   return {-p.y,p.x,p.z};
++        case UpAxis::ZDown: return {p.x,-p.z,p.y};
++        default:           return p;
++    }
+ }
+ // Portable View poses use decoded source coordinates, before units/up-axis transforms.
+ struct ViewpointPose { Vec3 position{},forward{0,0,-1}; };
+ inline Vec3 inverseOrient(Vec3 p,UpAxis up){
+-    if(up==UpAxis::ZUp)return {p.x,-p.z,p.y};
+-    return orient(p,up);
++    switch (up) {
++        case UpAxis::ZUp:   return orient(p, UpAxis::ZDown);
++        case UpAxis::ZDown: return orient(p, UpAxis::ZUp);
++        case UpAxis::XDown: return orient(p, UpAxis::XUp);
++        case UpAxis::XUp:   return orient(p, UpAxis::XDown);
++        default:           return orient(p, up);
++    }
+ }
+ inline bool validViewpoint(const ViewpointPose&p){
+     for(float f:{p.position.x,p.position.y,p.position.z,p.forward.x,p.forward.y,p.forward.z})
+diff --git a/scripts/build.py b/scripts/build.py
+index 02faba7..5047f0b 100644
+--- a/scripts/build.py
++++ b/scripts/build.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Build a signed, sideloadable arm64 APK using the Android SDK and NDK."""
++"""Build a signed arm64 APK using the Android SDK and NDK."""
+ import argparse
+ import hashlib
+ import os
+@@ -28,7 +28,22 @@ def run(*args):
+ def main():
+     parser=argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--debug',action='store_true',help='Build a debuggable APK instead of the default non-debuggable preview')
++    parser.add_argument('--release-keystore', type=Path, help='Existing Meta Horizon Store signing keystore')
++    parser.add_argument('--release-key-alias', help='Alias of the existing store signing key')
++    parser.add_argument('--version-code', type=int, help='Unused version code higher than the live store build')
++    parser.add_argument('--version-name', help='Version name for the store build')
+     args=parser.parse_args()
++    release = args.release_keystore is not None
++    if release:
++        if args.debug:
++            parser.error('--debug cannot be combined with --release-keystore')
++        if not args.release_key_alias or not args.version_name or not args.version_code or args.version_code < 1:
++            parser.error('Store builds need --release-key-alias, --version-code, and --version-name')
++        args.release_keystore = args.release_keystore.expanduser().resolve()
++        if not args.release_keystore.is_file():
++            parser.error('The store signing keystore does not exist')
++    elif args.release_key_alias or args.version_code is not None or args.version_name is not None:
++        parser.error('Store signing and version options require --release-keystore')
+     for p in [LLVM/'clang++', TOOLS/'aapt2', JAVA/'bin/javac', ANDROID_JAR]:
+         if not p.exists(): raise SystemExit(f'Missing {p}. Set ANDROID_HOME, ANDROID_NDK_HOME, and JAVA_HOME; install SDK platform/build-tools 36.')
+     BUILD.mkdir(exist_ok=True)
+@@ -36,6 +51,9 @@ def main():
+     ET.register_namespace('android','http://schemas.android.com/apk/res/android')
+     manifest=ET.parse(ROOT/'app/src/main/AndroidManifest.xml')
+     manifest.find('application').set('{http://schemas.android.com/apk/res/android}debuggable','true' if args.debug else 'false')
++    if release:
++        manifest.getroot().set('{http://schemas.android.com/apk/res/android}versionCode', str(args.version_code))
++        manifest.getroot().set('{http://schemas.android.com/apk/res/android}versionName', args.version_name)
+     manifest_path=BUILD/'AndroidManifest.xml'
+     manifest.write(manifest_path,encoding='utf-8',xml_declaration=True)
+     assets=ROOT/'app/src/main/assets'
+@@ -64,14 +82,17 @@ def main():
+         apk.write(dex/'classes.dex','classes.dex')
+         apk.write(BUILD/'libsplativerse-stripped.so','lib/arm64-v8a/libsplativerse.so')
+         apk.write(ROOT/'vendor/openxr/libopenxr_loader.so','lib/arm64-v8a/libopenxr_loader.so')
+-    key=BUILD/'debug.keystore'
+-    if not key.exists():
+-        run(JAVA/'bin/keytool','-genkeypair','-keystore',key,'-storepass','android','-keypass','android','-alias','androiddebugkey','-dname','CN=Splativerse Development,O=Splativerse,C=US','-keyalg','RSA','-keysize','2048','-validity','10000')
++    if release:
++        signing = ['--ks', args.release_keystore, '--ks-key-alias', args.release_key_alias]
++        output = ROOT/'Splativerse-Quest-release.apk'
++    else:
++        key = BUILD/'debug.keystore'
++        if not key.exists():
++            run(JAVA/'bin/keytool','-genkeypair','-keystore',key,'-storepass','android','-keypass','android','-alias','androiddebugkey','-dname','CN=Splativerse Development,O=Splativerse,C=US','-keyalg','RSA','-keysize','2048','-validity','10000')
++        signing = ['--ks', key, '--ks-pass', 'pass:android', '--key-pass', 'pass:android']
++        output = ROOT/('Splativerse-Quest-debug.apk' if args.debug else 'Splativerse-Quest-preview.apk')
+     run(TOOLS/'zipalign','-f','-p','4',BUILD/'unsigned.apk',BUILD/'aligned.apk')
+-    output=ROOT/('Splativerse-Quest-debug.apk' if args.debug else 'Splativerse-Quest-preview.apk')
+-    # Preserve the preview certificate so existing sideload installations update
+-    # without uninstalling scans. This is not a new production signing identity.
+-    run(TOOLS/'apksigner','sign','--ks',key,'--ks-pass','pass:android','--key-pass','pass:android','--v2-signing-enabled','true','--v3-signing-enabled','true','--out',output,BUILD/'aligned.apk')
++    run(TOOLS/'apksigner','sign',*signing,'--v2-signing-enabled','true','--v3-signing-enabled','true','--out',output,BUILD/'aligned.apk')
+     run(TOOLS/'apksigner','verify','--verbose',output)
+     run(sys.executable,ROOT/'scripts/verify_apk.py',output,*(['--allow-debug'] if args.debug else []))
+     digest=hashlib.sha256(output.read_bytes()).hexdigest()
+diff --git a/scripts/test_library.py b/scripts/test_library.py
+index 063a042..1313ab5 100644
+--- a/scripts/test_library.py
++++ b/scripts/test_library.py
+@@ -7,13 +7,15 @@ from pathlib import Path
+ root=Path(__file__).resolve().parents[1]
+ p=argparse.ArgumentParser(description=__doc__)
+ p.add_argument('--json-jar',type=Path,default=Path('/Applications/Android Studio.app/Contents/plugins/grazie/lib/org.json-json.jar'))
++p.add_argument('--splativerse-fixture',type=Path,help='Optional original Gundam at Osaka Expo.splativerse package')
+ p.add_argument('--vision-core',type=Path,help='Directory containing Vision Pro SplativerseCore Swift sources')
+ a=p.parse_args()
+ java=Path(os.environ.get('JAVA_HOME','/Applications/Android Studio.app/Contents/jbr/Contents/Home'))/'bin'
+ build=root/'.build/library-tests';shutil.rmtree(build,ignore_errors=True);build.mkdir(parents=True)
+ def run(*args):subprocess.run([str(v) for v in args],check=True)
+-run(java/'javac','-source','8','-target','8','-Xlint:-options','-cp',a.json_jar,'-d',build,root/'app/src/main/java/com/splativerse/quest/LibraryStore.java',root/'tests/LibraryStoreTests.java',root/'app/src/main/java/com/splativerse/quest/SavedViewList.java',root/'tests/SavedViewListTests.java')
++run(java/'javac','-source','8','-target','8','-Xlint:-options','-cp',a.json_jar,'-d',build,root/'app/src/main/java/com/splativerse/quest/LibraryStore.java',root/'tests/LibraryStoreTests.java',root/'app/src/main/java/com/splativerse/quest/ScanPackage.java',root/'tests/ScanPackageTests.java',root/'app/src/main/java/com/splativerse/quest/SavedViewList.java',root/'tests/SavedViewListTests.java')
+ run(java/'java','-cp',str(build)+os.pathsep+str(a.json_jar),'com.splativerse.quest.SavedViewListTests')
++run(java/'java','-cp',str(build)+os.pathsep+str(a.json_jar),'com.splativerse.quest.ScanPackageTests',*([a.splativerse_fixture.resolve()] if a.splativerse_fixture else []))
+ work=build/'data';fixture=[]
+ if a.vision_core:
+     run('swiftc','-O','-parse-as-library','-module-cache-path',build/'swift-cache',*sorted(a.vision_core.glob('*.swift')),root/'tests/vision_compatibility.swift','-o',build/'vision-compatibility')
+diff --git a/shaders/splat.vert b/shaders/splat.vert
+index 76699ae..3b2c922 100644
+--- a/shaders/splat.vert
++++ b/shaders/splat.vert
+@@ -112,8 +112,14 @@ void main(){
+     if(camera.eye.w==3){color=vec4(1,0,0,1);return;}
+     vec3 dir=s.position.xyz-camera.eye.xyz;
+     dir=length(dir)>1e-6?normalize(dir):vec3(0,0,1);
+-    if(camera.viewport.z<0.5)dir=vec3(dir.x,-dir.y,-dir.z);
+-    else if(camera.viewport.z>1.5)dir=vec3(dir.x,-dir.z,dir.y);
++    // Inverse of the scan rotation in native/core.h, using the same axis IDs.
++    switch (int(camera.viewport.z)) {
++        case 0: dir=vec3(dir.x,-dir.y,-dir.z); break;
++        case 2: dir=vec3(dir.x,-dir.z,dir.y); break;
++        case 3: dir=vec3(-dir.y,dir.x,dir.z); break;
++        case 4: dir=vec3(dir.y,-dir.x,dir.z); break;
++        case 5: dir=vec3(dir.x,dir.z,-dir.y); break;
++    }
+     vec3 rgb=evalSH(index*24,s,dir);
+     if(camera.viewport.w>0.5)rgb=pow(rgb,vec3(2.2));
+     float fade=camera.bubble.w>0?clamp((camera.bubble.w-distance(s.position.xyz,camera.bubble.xyz))/max(camera.bubble.w-camera.renderInfo.x,1e-6),0,1):1;
+diff --git a/tests/ScanPackageTests.java b/tests/ScanPackageTests.java
+new file mode 100644
+index 0000000..ee40490
+--- /dev/null
++++ b/tests/ScanPackageTests.java
+@@ -0,0 +1,72 @@
++package com.splativerse.quest;
++
++import org.json.*;
++import java.io.*;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.*;
++import java.util.*;
++
++public final class ScanPackageTests {
++    private static void require(boolean condition,String message){if(!condition)throw new AssertionError(message);}
++    private static void rejected(byte[] data,File scans)throws Exception{
++        try(ScanPackage ignored=ScanPackage.read(new ByteArrayInputStream(data),scans)){
++            throw new AssertionError("Invalid package was accepted");
++        }catch(IOException|JSONException expected){}
++    }
++    private static byte[] synthetic(String setting,boolean badHash)throws Exception{
++        byte[] payload=new byte[32];
++        String digest;
++        File tmp=File.createTempFile("sample-",".splat");
++        try{Files.write(tmp.toPath(),payload);digest=LibraryStore.fingerprint(tmp);}finally{tmp.delete();}
++        JSONObject meta=new JSONObject().put("version",1).put("filename","fixture.splat").put("byteCount",32)
++                .put("sha256",badHash?digest.replace('6','a'):digest)
++                .put("settings",LibraryStore.defaultSettings().put("spawnMode",setting));
++        byte[] m=meta.toString().getBytes(StandardCharsets.UTF_8),v="{\"views\":[]}".getBytes(StandardCharsets.UTF_8);
++        return java.nio.ByteBuffer.allocate(16+m.length+v.length+payload.length).order(java.nio.ByteOrder.LITTLE_ENDIAN)
++                .put("SPLATPK1".getBytes(StandardCharsets.US_ASCII)).putInt(m.length).putInt(v.length).put(m).put(v).put(payload).array();
++    }
++    public static void main(String[] args)throws Exception{
++        Path base=Files.createTempDirectory("quest-package-test");
++        File scans=Files.createDirectory(base.resolve("Scans")).toFile();
++        try{
++            LibraryStore store=new LibraryStore(base.resolve("Library").toFile());
++            byte[] good=synthetic("denseRegion",false);
++            try(ScanPackage p=ScanPackage.read(new ByteArrayInputStream(good),scans)){
++                require(p.extension.equals(".splat"),"Expected embedded SPLAT");
++            }
++            rejected(Arrays.copyOf(good,good.length-1),scans);
++            rejected(Arrays.copyOf(good,good.length+1),scans);
++            rejected(synthetic("denseRegion",true),scans);
++            rejected(synthetic("scanCenter",false),scans);
++            byte[] length=good.clone();Arrays.fill(length,8,12,(byte)0xff);rejected(length,scans);
++            require(scans.list().length==0,"Failed import left a staged file");
++
++            if(args.length!=0){
++                String digest,viewId;
++                try(InputStream in=new FileInputStream(args[0]);ScanPackage p=ScanPackage.read(in,scans)){
++                    digest=p.digest;viewId=p.views.getString("defaultID");
++                    require(p.extension.equals(".ply"),"Expected embedded PLY");
++                    require(store.importPackage(p,scans,false),"Expected first import to add a scan");
++                }
++                File live=new File(scans,digest+".ply");
++                require(LibraryStore.inspect(live).count==351928,"Actual Gundam PLY vertex count changed");
++                require(LibraryStore.fingerprint(live).equals(digest),"Original scan bytes changed");
++                JSONObject start=LibraryStore.startingPose(store.views(digest));
++                require(Math.abs(start.getJSONArray("position").getDouble(0)+10.0780735)<1e-8,"Launch position was lost");
++                require(Math.abs(start.getJSONArray("forward").getDouble(2)-0.82267284)<1e-8,"Launch direction was lost");
++                require(store.metadata(digest).getJSONObject("settings").getString("upAxis").equals("yDown"),"Up axis was lost");
++                store.editView(digest,viewId,"rename","My local view");
++                try(InputStream in=new FileInputStream(args[0]);ScanPackage p=ScanPackage.read(in,scans)){
++                    require(!store.importPackage(p,scans,true),"Repeated import added a duplicate");
++                }
++                require(scans.list().length==1,"Repeated import left extra files");
++                require(store.views(digest).getJSONArray("views").getJSONObject(0).getString("name").equals("My local view"),"Local View edit was overwritten");
++            }
++        }finally{
++            try(java.util.stream.Stream<Path> all=Files.walk(base)){
++                for(Path path:(Iterable<Path>)all.sorted(Comparator.reverseOrder())::iterator)Files.delete(path);
++            }
++        }
++        System.out.println("ScanPackageTests passed");
++    }
++}
+diff --git a/tests/viewpoint_tests.cpp b/tests/viewpoint_tests.cpp
+index 3651a65..635444c 100644
+--- a/tests/viewpoint_tests.cpp
++++ b/tests/viewpoint_tests.cpp
+@@ -5,7 +5,16 @@
+ using namespace sv;
+ static bool close(Vec3 a,Vec3 b){return dot(a-b,a-b)<1e-7f;}
+ void viewpointTests(){
+-    for(auto axis:{UpAxis::YDown,UpAxis::YUp,UpAxis::ZUp})for(float units:{1.f,.01f,.001f})for(float heading:{-2.8f,0.f,1.2f}){
++    const std::pair<UpAxis,Vec3> downDirections[] = {
++        {UpAxis::YDown,{0,1,0}}, {UpAxis::YUp,{0,-1,0}},
++        {UpAxis::ZUp,{0,0,-1}}, {UpAxis::ZDown,{0,0,1}},
++        {UpAxis::XDown,{1,0,0}}, {UpAxis::XUp,{-1,0,0}}
++    };
++    for (const auto& [axis, down] : downDirections) {
++        assert(close(orient(down,axis),{0,-1,0}));
++        assert(close(inverseOrient(orient({2,3,5},axis),axis),{2,3,5}));
++    }
++    for(auto axis:{UpAxis::YDown,UpAxis::YUp,UpAxis::ZUp,UpAxis::ZDown,UpAxis::XDown,UpAxis::XUp})for(float units:{1.f,.01f,.001f})for(float heading:{-2.8f,0.f,1.2f}){
+         Settings settings{units,axis};Vec3 source{123.25f,-750.5f,39.f};Vec3 target=orient(source,axis)*units;
+         ViewpointPose saved=captureViewpoint(target,heading,settings);assert(validViewpoint(saved));
+         assert(dot(saved.position-source,saved.position-source)<1e-6f);
