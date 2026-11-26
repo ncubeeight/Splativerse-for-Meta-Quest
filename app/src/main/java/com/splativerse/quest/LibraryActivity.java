@@ -21,11 +21,12 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public final class LibraryActivity extends Activity {
+    private static final String FREE_SCANS_URL = "https://splativerse.app/";
     private final ExecutorService worker=LibraryStore.IO;
     private final int ink=Color.rgb(238,241,239),muted=Color.rgb(165,175,172),green=Color.rgb(116,226,180),surface=Color.rgb(34,39,37);
     private SharedPreferences preferences;private LibraryStore store;private File directory;
     private final List<LibraryStore.Item> items=new ArrayList<>(),visible=new ArrayList<>();
-    private LinearLayout root,body,sidebar,detail;private TextView status,summary;private Button importButton,refreshButton;private ListView list;private ScanAdapter adapter;
+    private LinearLayout root,body,sidebar,detail;private TextView status,summary;private Button importButton,refreshButton,browseButton;private ListView list;private ScanAdapter adapter;
     private Set<String> hiddenScans=new HashSet<>();private boolean showHidden=false;
     private String selected="",query="",format="All formats";private int sort=0;private boolean busy=true,wide=false,detailVisible=false;
     private int dp(float v){return Math.round(v*getResources().getDisplayMetrics().density);}
@@ -39,7 +40,7 @@ public final class LibraryActivity extends Activity {
     private void enabled(Button b,boolean value){b.setEnabled(value);b.setAlpha(value?1f:0.4f);}
     private void ui(Runnable action){runOnUiThread(()->{if(!isDestroyed())action.run();});}
     private void message(String value,boolean error){status.setText(value);status.setTextColor(error?Color.rgb(255,187,157):muted);}
-    private void busy(boolean value,String label){busy=value;enabled(importButton,!value);enabled(refreshButton,!value);if(label!=null)message(label,false);if(adapter!=null)adapter.notifyDataSetChanged();}
+    private void busy(boolean value,String label){busy=value;enabled(importButton,!value);enabled(refreshButton,!value);enabled(browseButton,!value);if(label!=null)message(label,false);if(adapter!=null)adapter.notifyDataSetChanged();}
     @Override public void onCreate(Bundle state){
         super.onCreate(state);android.util.Log.i("Splativerse","Panel created: task "+getTaskId());preferences=getSharedPreferences("splativerse",MODE_PRIVATE);selected=preferences.getString("selectedDigest","");hiddenScans=new HashSet<>(preferences.getStringSet("hiddenScanDigests",Collections.emptySet()));
         File external=getExternalFilesDir(null),base=external!=null?external:getFilesDir();directory=new File(base,"Scans");
@@ -52,6 +53,8 @@ public final class LibraryActivity extends Activity {
         status=text("Preparing your library…",13,muted);status.setMinHeight(dp(35));root.addView(status);
         body=row();body.setGravity(Gravity.TOP);root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
         sidebar=column();sidebar.setPadding(dp(12),dp(8),dp(12),dp(8));sidebar.setBackground(bg(surface));body.addView(sidebar,new LinearLayout.LayoutParams(wide?dp(310):-1,-1));
+        browseButton = button("Browse free scans", false, this::browseFreeScans);
+        sidebar.addView(browseButton);
         EditText search=new EditText(this);search.setSingleLine(true);search.setHint("Search scans or Views");search.setTextColor(ink);search.setHintTextColor(muted);search.setTextSize(16);sidebar.addView(search,new LinearLayout.LayoutParams(-1,dp(50)));
         search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int st,int c,int a){}public void onTextChanged(CharSequence s,int st,int before,int count){query=s.toString();filter();}public void afterTextChanged(Editable e){}});
         Spinner order=spinner(new String[]{"Name A–Z","Recently opened","Largest files","Most saved Views"});sidebar.addView(order);order.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onItemSelected(AdapterView<?> p,View v,int n,long id){sort=n;filter();}public void onNothingSelected(AdapterView<?>p){}});
@@ -163,6 +166,19 @@ public final class LibraryActivity extends Activity {
             String compareName=getIntent().getStringExtra("compareName");getIntent().removeExtra("compareName");LibraryStore.Item reduced=null;for(LibraryStore.Item candidate:items)if(candidate.filenames.contains(compareName))reduced=candidate;renderDetail();launch(i,pose,null,reduced);return;}
         message("The requested scan was not found. Refresh the library.",true);
     }
+    private void browseFreeScans() {
+        Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(FREE_SCANS_URL));
+        try {
+            startActivity(browser);
+        } catch (ActivityNotFoundException e) {
+            new AlertDialog.Builder(this)
+                .setTitle("Browse free scans")
+                .setMessage("Open " + FREE_SCANS_URL + " in Quest Browser. After downloading an SPZ scan, return here and choose Import scans → Downloads.")
+                .setPositiveButton("Done", null)
+                .show();
+        }
+    }
+
     private void pick(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);try{startActivityForResult(i,42);}catch(Exception e){message("No file picker is installed. Scans can also be copied to the app’s Scans folder over USB.",true);}}
     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request!=42||result!=RESULT_OK||data==null)return;List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null)for(int i=0;i<data.getClipData().getItemCount();i++)uris.add(data.getClipData().getItemAt(i).getUri());else if(data.getData()!=null)uris.add(data.getData());if(uris.isEmpty())return;
         busy(true,"Importing scans…");Set<String> known=new HashSet<>();for(LibraryStore.Item item:items)known.add(item.digest);worker.execute(()->{List<String> errors=new ArrayList<>();int imported=0,duplicates=0;
@@ -172,7 +188,7 @@ public final class LibraryActivity extends Activity {
             final int added=imported,existing=duplicates;ui(()->{busy(false,null);loadLibrary();Toast.makeText(this,added+" imported · "+existing+" already in library",Toast.LENGTH_LONG).show();if(!errors.isEmpty())new AlertDialog.Builder(this).setTitle("Some files could not be imported").setMessage(android.text.TextUtils.join("\n\n",errors)).setPositiveButton("OK",null).show();});
         });
     }
-    private void help(){new AlertDialog.Builder(this).setTitle("Exploring and saving Views").setMessage("Left stick: move / strafe\nRight stick: snap turn / move up and down\nLeft-stick click: save a View\nRight-stick click: change radius\nX: open or close this scan’s saved Views\nY: switch between original scan appearance and sharper detail\nA: return to your starting View\nB: return to this library\nRight trigger: select menu arrows or X\nLeft trigger: show the hidden controls menu\n\nUse × beside a library scan to hide it without deleting its file or saved Views. Turn on Show hidden scans and choose ↶ to restore it.\n\n“Smooth edges” means the scan’s built-in smoothing is active. “Original look” preserves a scan without that smoothing. “Sharper detail” uses an alternative sharpening filter.\n\nIn a detail comparison, X switches detail and left-stick click saves comparison images.\n\nViews are named automatically. Rename, update, delete or choose a starting View in the library.\n\nQuest preview 0.1.14 · Up to 1,000,000 splats / 128 MiB. Movement has no collision detection.").setNegativeButton("Licenses",(d,w)->licenses()).setPositiveButton("Done",null).show();}
+    private void help(){new AlertDialog.Builder(this).setTitle("Exploring and saving Views").setMessage("Choose Browse free scans to open Splativerse.app in your browser. After downloading an SPZ scan, return here and choose Import scans → Downloads.\n\nLeft stick: move / strafe\nRight stick: snap turn / move up and down\nLeft-stick click: save a View\nRight-stick click: change radius\nX: open or close this scan’s saved Views\nY: switch between original scan appearance and sharper detail\nA: return to your starting View\nB: return to this library\nRight trigger: select menu arrows or X\nLeft trigger: show the hidden controls menu\n\nUse × beside a library scan to hide it without deleting its file or saved Views. Turn on Show hidden scans and choose ↶ to restore it.\n\n“Smooth edges” means the scan’s built-in smoothing is active. “Original look” preserves a scan without that smoothing. “Sharper detail” uses an alternative sharpening filter.\n\nIn a detail comparison, X switches detail and left-stick click saves comparison images.\n\nViews are named automatically. Rename, update, delete or choose a starting View in the library.\n\nQuest preview 0.1.14 · Up to 1,000,000 splats / 128 MiB. Movement has no collision detection.").setNegativeButton("Licenses",(d,w)->licenses()).setPositiveButton("Done",null).show();}
     private void licenses(){try(InputStream in=getAssets().open("THIRD_PARTY_LICENSES.txt")){ByteArrayOutputStream out=new ByteArrayOutputStream();copy(in,out);ScrollView scroll=new ScrollView(this);TextView t=text(out.toString("UTF-8"),13,ink);t.setPadding(dp(20),dp(12),dp(20),dp(12));scroll.addView(t);new AlertDialog.Builder(this).setTitle("Open-source licenses").setView(scroll).setPositiveButton("Close",null).show();}catch(Exception e){failure(e);}}
     private void failure(Exception e){ui(()->{busy(false,null);message(e.getMessage()==null?"Something went wrong. Your scan files were kept.":e.getMessage(),true);});}
     private void copy(InputStream in,OutputStream out)throws IOException{byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}
