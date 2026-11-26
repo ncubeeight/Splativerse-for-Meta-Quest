@@ -6,6 +6,7 @@ A native Gaussian splat viewer for Meta Quest, built with C++, Vulkan, OpenXR an
 
 ## Features
 
+- Browse free scans on [Splativerse.app](https://splativerse.app/) from the scan library.
 - Import SPZ, PLY and SPLAT scans from the Android file picker.
 - Explore scenes with tracked headset movement and Touch controller navigation.
 - Search, sort, and hide or restore library entries without deleting scan files.
@@ -20,6 +21,12 @@ This is the Quest counterpart to [Splativerse for visionOS](https://github.com/n
 Version **0.1.14**, code **15**, is a development preview. Library, saved Views, controller menu interaction and return to the system library have been tested on Quest Pro. Quest 2, Quest 3 and Quest 3S have not yet been physically tested. Large-scan performance remains below the store rendering requirement and needs further optimization and sustained testing. Store submission preparation is in progress; this repository does not claim store approval or availability.
 
 Scans up to 1 million splats / 128 MiB are accepted, but file acceptance is not a performance guarantee. Other scenes and optional companion downloads are not included. There are no in-app accounts, ads, analytics services or network downloads.
+
+## Download free scans on Quest
+
+1. In the app’s scan library, choose **Browse free scans**.
+2. Download an **SPZ** scan in Quest Browser.
+3. Return to Splativerse and choose **Import scans → Downloads**, then select the file.
 
 ## Controls
 
